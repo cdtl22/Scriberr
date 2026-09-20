@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +17,16 @@ import (
 	"scriberr/internal/transcription/interfaces"
 	"scriberr/pkg/logger"
 )
+
+const whisperXRemoteMaxErrorBody = 4096
+
+func whisperXRemoteBaseURL() string {
+	raw := strings.TrimSpace(os.Getenv("WHISPERX_REMOTE_URL"))
+	if raw == "" {
+		return ""
+	}
+	return strings.TrimRight(raw, "/")
+}
 
 // WhisperXAdapter implements the TranscriptionAdapter interface for WhisperX
 type WhisperXAdapter struct {
@@ -411,10 +424,117 @@ func (w *WhisperXAdapter) Transcribe(ctx context.Context, input interfaces.Audio
 	}
 	defer w.CleanupTempDirectory(tempDir)
 
+	if remoteBaseURL := whisperXRemoteBaseURL(); remoteBaseURL != "" {
+		if err := w.transcribeViaRemote(ctx, input, tempDir, remoteBaseURL); err != nil {
+			if ctx.Err() == context.Canceled {
+				return nil, fmt.Errorf("transcription was cancelled")
+			}
+			return nil, err
+		}
+	} else if err := w.transcribeViaLocal(ctx, input, params, procCtx, tempDir); err != nil {
+		if ctx.Err() == context.Canceled {
+			return nil, fmt.Errorf("transcription was cancelled")
+		}
+		return nil, err
+	}
+
+	// Parse result
+	result, err := w.parseResult(tempDir, input, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse result: %w", err)
+	}
+
+	result.ProcessingTime = time.Since(startTime)
+	result.ModelUsed = w.GetStringParameter(params, "model")
+	result.Metadata = w.CreateDefaultMetadata(params)
+
+	logger.Info("WhisperX transcription completed",
+		"segments", len(result.Segments),
+		"words", len(result.WordSegments),
+		"processing_time", result.ProcessingTime)
+
+	return result, nil
+}
+
+func (w *WhisperXAdapter) transcribeViaRemote(ctx context.Context, input interfaces.AudioInput, tempDir, baseURL string) error {
+	endpoint := baseURL + "/transcribe"
+
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	contentType := writer.FormDataContentType()
+
+	go func() {
+		var copyErr error
+		defer func() {
+			if copyErr != nil {
+				_ = pw.CloseWithError(copyErr)
+				return
+			}
+			_ = pw.Close()
+		}()
+
+		file, copyErr := os.Open(input.FilePath)
+		if copyErr != nil {
+			return
+		}
+		defer file.Close()
+
+		part, copyErr := writer.CreateFormFile("file", filepath.Base(input.FilePath))
+		if copyErr != nil {
+			return
+		}
+		if _, copyErr = io.Copy(part, file); copyErr != nil {
+			return
+		}
+		if copyErr = writer.Close(); copyErr != nil {
+			return
+		}
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, pr)
+	if err != nil {
+		return fmt.Errorf("failed to create remote WhisperX request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+
+	logger.Info("Executing remote WhisperX transcription")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("remote WhisperX request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, whisperXRemoteMaxErrorBody))
+		return fmt.Errorf("remote WhisperX worker returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	baseName := strings.TrimSuffix(filepath.Base(input.FilePath), filepath.Ext(input.FilePath))
+	if baseName == "" {
+		baseName = "transcription"
+	}
+	resultPath := filepath.Join(tempDir, baseName+".json")
+
+	out, err := os.Create(resultPath)
+	if err != nil {
+		return fmt.Errorf("failed to create remote WhisperX result file: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("failed to save remote WhisperX result: %w", err)
+	}
+
+	return nil
+}
+
+func (w *WhisperXAdapter) transcribeViaLocal(ctx context.Context, input interfaces.AudioInput, params map[string]interface{}, procCtx interfaces.ProcessingContext, tempDir string) error {
 	// Build WhisperX command
 	args, err := w.buildWhisperXArgs(input, params, tempDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build command: %w", err)
+		return fmt.Errorf("failed to build command: %w", err)
 	}
 
 	// Execute WhisperX
@@ -459,10 +579,6 @@ func (w *WhisperXAdapter) Transcribe(ctx context.Context, input interfaces.Audio
 	logger.Info("Executing WhisperX command", "args", strings.Join(args, " "))
 
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.Canceled {
-			return nil, fmt.Errorf("transcription was cancelled")
-		}
-
 		// Read tail of log file for context
 		logPath := filepath.Join(procCtx.OutputDirectory, "transcription.log")
 		logTail, readErr := w.ReadLogTail(logPath, 2048)
@@ -471,25 +587,10 @@ func (w *WhisperXAdapter) Transcribe(ctx context.Context, input interfaces.Audio
 		}
 
 		logger.Error("WhisperX execution failed", "error", err)
-		return nil, fmt.Errorf("WhisperX execution failed: %w\nLogs:\n%s", err, logTail)
+		return fmt.Errorf("WhisperX execution failed: %w\nLogs:\n%s", err, logTail)
 	}
 
-	// Parse result
-	result, err := w.parseResult(tempDir, input, params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse result: %w", err)
-	}
-
-	result.ProcessingTime = time.Since(startTime)
-	result.ModelUsed = w.GetStringParameter(params, "model")
-	result.Metadata = w.CreateDefaultMetadata(params)
-
-	logger.Info("WhisperX transcription completed",
-		"segments", len(result.Segments),
-		"words", len(result.WordSegments),
-		"processing_time", result.ProcessingTime)
-
-	return result, nil
+	return nil
 }
 
 // buildWhisperXArgs builds the command arguments for WhisperX

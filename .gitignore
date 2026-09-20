@@ -62,6 +62,9 @@ tests/database_test.db-wal
 internal/web/dist
 
 
+# Local Go toolchain (e.g. from GOTOOLCHAIN=local)
+.toolchain/
+
 # Development files
 prompt.txt
 # .agent/
