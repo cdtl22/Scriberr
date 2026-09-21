@@ -25,6 +25,7 @@ import (
 	"scriberr/internal/service/titlededup"
 	"scriberr/internal/sse"
 	"scriberr/internal/transcription"
+	"scriberr/internal/transcriptindex"
 	"scriberr/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -54,6 +55,7 @@ type Handler struct {
 	multiTrackProcessor *processing.MultiTrackProcessor
 	broadcaster         *sse.Broadcaster
 	titleDedup            *titlededup.Service
+	transcriptIndexer   *transcriptindex.Indexer
 }
 
 // NewHandler creates a new handler
@@ -100,6 +102,11 @@ func NewHandler(
 		broadcaster:         broadcaster,
 		titleDedup:            titlededup.NewService(jobRepo),
 	}
+}
+
+// SetTranscriptIndexer wires transcript search indexing (optional).
+func (h *Handler) SetTranscriptIndexer(idx *transcriptindex.Indexer) {
+	h.transcriptIndexer = idx
 }
 
 // SubmitJobRequest represents the submit job request
@@ -1313,6 +1320,10 @@ func (h *Handler) DeleteTranscriptionJob(c *gin.Context) {
 	// Delete Summaries
 	if err := h.summaryRepo.DeleteByTranscriptionID(ctx, jobID); err != nil {
 		fmt.Printf("Failed to delete summaries for job %s: %v\n", jobID, err)
+	}
+
+	if h.transcriptIndexer != nil {
+		_ = h.transcriptIndexer.DeleteJob(ctx, jobID)
 	}
 
 	// Delete Speaker Mappings

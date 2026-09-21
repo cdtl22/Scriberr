@@ -234,6 +234,15 @@ func SetupRoutes(handler *Handler, authService *auth.AuthService) *gin.Engine {
 			notes.DELETE("/:note_id", handler.DeleteNote)
 		}
 
+		// Transcript search (require authentication)
+		search := v1.Group("/search")
+		search.Use(middleware.AuthMiddleware(authService))
+		{
+			search.GET("/transcripts", handler.SearchTranscripts)
+			search.POST("/transcripts/ask", handler.AskTranscripts)
+			search.POST("/reindex", handler.ReindexTranscripts)
+		}
+
 		// Summarization route (require authentication)
 		summarize := v1.Group("/summarize")
 		summarize.Use(middleware.AuthMiddleware(authService))

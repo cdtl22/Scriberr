@@ -14,6 +14,7 @@ import (
 	"scriberr/internal/models"
 	"scriberr/internal/repository"
 	"scriberr/internal/sse"
+	"scriberr/internal/transcriptindex"
 	"scriberr/internal/transcription/interfaces"
 	"scriberr/internal/transcription/pipeline"
 	"scriberr/internal/transcription/registry"
@@ -52,6 +53,7 @@ type UnifiedTranscriptionService struct {
 	jobRepo               repository.JobRepository
 	webhookService        *webhook.Service
 	broadcaster           *sse.Broadcaster
+	transcriptIndexer     *transcriptindex.Indexer
 }
 
 // NewUnifiedTranscriptionService creates a new unified transcription service
@@ -75,6 +77,11 @@ func NewUnifiedTranscriptionService(jobRepo repository.JobRepository, tempDir, o
 // SetBroadcaster sets the SSE broadcaster for the service
 func (u *UnifiedTranscriptionService) SetBroadcaster(b *sse.Broadcaster) {
 	u.broadcaster = b
+}
+
+// SetTranscriptIndexer indexes transcript segments when a job finishes transcription.
+func (u *UnifiedTranscriptionService) SetTranscriptIndexer(idx *transcriptindex.Indexer) {
+	u.transcriptIndexer = idx
 }
 
 // Initialize prepares all registered models for use
@@ -890,6 +897,12 @@ func (u *UnifiedTranscriptionService) saveTranscriptionResults(jobID string, res
 	// Update the job in the database
 	if err := u.jobRepo.UpdateTranscript(context.Background(), jobID, resultJSON); err != nil {
 		return fmt.Errorf("failed to update job transcript: %w", err)
+	}
+
+	if u.transcriptIndexer != nil {
+		if err := u.transcriptIndexer.IndexJob(context.Background(), jobID); err != nil {
+			logger.Warn("Failed to index transcript segments", "job_id", jobID, "error", err)
+		}
 	}
 
 	logger.Info("Saved transcription results", "job_id", jobID, "text_length", len(result.Text))

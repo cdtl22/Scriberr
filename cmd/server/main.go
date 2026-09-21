@@ -20,6 +20,7 @@ import (
 	"scriberr/internal/repository"
 	"scriberr/internal/service"
 	"scriberr/internal/sse"
+	"scriberr/internal/transcriptindex"
 	"scriberr/internal/transcription"
 	"scriberr/internal/transcription/adapters"
 	"scriberr/internal/transcription/registry"
@@ -106,6 +107,7 @@ func main() {
 	summaryRepo := repository.NewSummaryRepository(database.DB)
 	chatRepo := repository.NewChatRepository(database.DB)
 	noteRepo := repository.NewNoteRepository(database.DB)
+	transcriptSegmentRepo := repository.NewTranscriptSegmentRepository(database.DB)
 	speakerMappingRepo := repository.NewSpeakerMappingRepository(database.DB)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(database.DB)
 
@@ -116,8 +118,11 @@ func main() {
 
 	// Initialize unified transcription processor
 	logger.Startup("transcription", "Initializing transcription service")
+	transcriptIndexer := transcriptindex.NewIndexer(database.DB, transcriptSegmentRepo, jobRepo)
+
 	unifiedProcessor := transcription.NewUnifiedJobProcessor(jobRepo, cfg.TempDir, cfg.TranscriptsDir)
 	unifiedProcessor.GetUnifiedService().SetBroadcaster(broadcaster)
+	unifiedProcessor.GetUnifiedService().SetTranscriptIndexer(transcriptIndexer)
 
 	// Bootstrap embedded Python environment (for all adapters)
 	logger.Startup("python", "Preparing Python environment")
@@ -165,6 +170,7 @@ func main() {
 		multiTrackProcessor,
 		broadcaster,
 	)
+	handler.SetTranscriptIndexer(transcriptIndexer)
 
 	// Set up router
 	router := api.SetupRoutes(handler, authService)

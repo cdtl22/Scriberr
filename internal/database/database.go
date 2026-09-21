@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"scriberr/internal/models"
+	"scriberr/internal/transcriptindex"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -75,6 +76,7 @@ func Initialize(dbPath string) error {
 		&models.SummarySetting{},
 		&models.Summary{},
 		&models.Note{},
+		&models.TranscriptSegment{},
 		&models.RefreshToken{},
 	); err != nil {
 		return fmt.Errorf("failed to auto migrate: %v", err)
@@ -99,6 +101,10 @@ func Initialize(dbPath string) error {
 	// Add unique constraint for speaker mappings (transcription_job_id + original_speaker)
 	if err := DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_speaker_mappings_unique ON speaker_mappings(transcription_job_id, original_speaker)").Error; err != nil {
 		return fmt.Errorf("failed to create unique constraint for speaker mappings: %v", err)
+	}
+
+	if err := transcriptindex.EnsureFTSSchema(DB); err != nil {
+		return fmt.Errorf("failed to initialize transcript FTS: %v", err)
 	}
 
 	return nil
