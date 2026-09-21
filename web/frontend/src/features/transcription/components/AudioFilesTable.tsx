@@ -65,7 +65,7 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 
 	// Table State
 	const sorting = [
-		{ id: "created_at", desc: true }
+		{ id: "title", desc: true }
 	];
 	const [globalFilter, setGlobalFilter] = useState("");
 
