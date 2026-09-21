@@ -10,6 +10,28 @@ echo "Requested UID: $PUID, GID: $PGID"
 # export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu/
 # echo "LD_LIBRARY_PATH is: $LD_LIBRARY_PATH"
 
+# chown only when this path is not already owned by PUID:PGID.
+# Pass "recursive" as the second argument to chown -R (use on volume roots sparingly).
+ensure_ownership() {
+    local path="$1"
+    local recursive="${2:-}"
+
+    [ -e "$path" ] || return 0
+
+    local uid gid
+    uid=$(stat -c '%u' "$path")
+    gid=$(stat -c '%g' "$path")
+    if [ "$uid" = "$PUID" ] && [ "$gid" = "$PGID" ]; then
+        return 0
+    fi
+
+    if [ "$recursive" = "recursive" ]; then
+        chown -R "$PUID:$PGID" "$path"
+    else
+        chown "$PUID:$PGID" "$path"
+    fi
+}
+
 # Function to setup user if needed
 setup_user() {
     local target_uid=$1
@@ -35,9 +57,6 @@ setup_user() {
             echo "Warning: Could not change user ID, continuing with existing user"
         }
 
-        # Update ownership of app directory
-        chown -R "$target_uid:$target_gid" /app 2>/dev/null || true
-
     else
         echo "Using default user (UID=1000, GID=1000)"
     fi
@@ -50,7 +69,20 @@ if [ "$(id -u)" = "0" ]; then
     # Set up directories with proper ownership
     echo "Setting up data directories..."
     mkdir -p /app/data/uploads /app/data/transcripts /app/whisperx-env
-    chown -R "$PUID:$PGID" /app/data /app/whisperx-env
+
+    # Files baked into the image (usermod does not reassign these from UID 1000).
+    ensure_ownership /app/scriberr
+    if [ -d /app/bin ]; then
+        ensure_ownership /app/bin recursive
+    fi
+
+    # Persistent volumes: full recursive chown only when the mount root is wrong.
+    ensure_ownership /app/data recursive
+    ensure_ownership /app/whisperx-env recursive
+
+    # mkdir -p may create these as root while the volume root already matches PUID:PGID.
+    ensure_ownership /app/data/uploads
+    ensure_ownership /app/data/transcripts
 
     echo "=== Setup Complete ==="
     echo "Switching to user appuser (UID=$PUID, GID=$PGID) and starting application..."
