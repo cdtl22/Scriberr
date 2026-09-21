@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
-	"scriberr/internal/models"
 	"time"
+
+	"scriberr/internal/models"
+	"scriberr/internal/titleutil"
 
 	"gorm.io/gorm"
 )
@@ -65,6 +67,7 @@ type JobRepository interface {
 	FindByStatus(ctx context.Context, status models.JobStatus) ([]models.TranscriptionJob, error)
 	CountByStatus(ctx context.Context, status models.JobStatus) (int64, error)
 	UpdateSummary(ctx context.Context, jobID string, summary string) error
+	FindByTitleDedupKey(ctx context.Context, dedupKey string) (*models.TranscriptionJob, error)
 }
 
 type jobRepository struct {
@@ -207,6 +210,26 @@ func (r *jobRepository) CountByStatus(ctx context.Context, status models.JobStat
 
 func (r *jobRepository) UpdateSummary(ctx context.Context, jobID string, summary string) error {
 	return r.db.WithContext(ctx).Model(&models.TranscriptionJob{}).Where("id = ?", jobID).Update("summary", summary).Error
+}
+
+func (r *jobRepository) FindByTitleDedupKey(ctx context.Context, dedupKey string) (*models.TranscriptionJob, error) {
+	var jobs []models.TranscriptionJob
+	err := r.db.WithContext(ctx).
+		Where("title IS NOT NULL AND title != ''").
+		Order("created_at ASC, id ASC").
+		Find(&jobs).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		if jobs[i].Title == nil {
+			continue
+		}
+		if titleutil.DedupKey(*jobs[i].Title) == dedupKey {
+			return &jobs[i], nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 // APIKeyRepository handles API key operations

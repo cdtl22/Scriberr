@@ -133,6 +133,14 @@ func (m *MockJobRepository) UpdateSummary(ctx context.Context, jobID string, sum
 	return args.Error(0)
 }
 
+func (m *MockJobRepository) FindByTitleDedupKey(ctx context.Context, dedupKey string) (*models.TranscriptionJob, error) {
+	args := m.Called(ctx, dedupKey)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.TranscriptionJob), args.Error(1)
+}
+
 // MockTranscriptionAdapter is a mock implementation of TranscriptionAdapter
 type MockTranscriptionAdapter struct {
 	mock.Mock

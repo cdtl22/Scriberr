@@ -38,6 +38,14 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/features/auth/hooks/useAuth";
 import { useAudioListInfinite, type AudioFile } from "@/features/transcription/hooks/useAudioFiles";
 import { useTranscriptionEvents } from "@/features/transcription/hooks/useTranscriptionEvents";
+import { extractTitle } from "@/utils/fileProcessor";
+
+function getRecordingDisplayTitle(file: AudioFile, fileNameFromPath: string): string {
+	if (file.title) {
+		return extractTitle(file.title);
+	}
+	return extractTitle(fileNameFromPath);
+}
 
 const JobStatusMonitor = memo(function JobStatusMonitor({ jobId }: { jobId: string }) {
 	useTranscriptionEvents(jobId);
@@ -797,7 +805,7 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 										{/* Text */}
 										<div className="min-w-0">
 											<h4 className="font-normal text-gray-900 dark:text-gray-100 truncate text-lg leading-tight group-hover:text-[#FF6D20] transition-colors">
-												{file.title || getFileName(file.audio_path)}
+												{getRecordingDisplayTitle(file, getFileName(file.audio_path))}
 											</h4>
 											<div className="flex items-center gap-1.5 mt-1 text-sm text-gray-500">
 												{formatDate(file.created_at)}
@@ -1033,7 +1041,7 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 						</AlertDialogTitle>
 						<AlertDialogDescription className="text-[var(--text-secondary)]">
 							Are you sure you want to stop the transcription process
-							for "{selectedFile?.title || (selectedFile ? getFileName(selectedFile.audio_path) : "")}"?
+							for "{selectedFile ? getRecordingDisplayTitle(selectedFile, getFileName(selectedFile.audio_path)) : ""}"?
 							Partially transcribed data may be saved.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
@@ -1067,7 +1075,7 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 						</AlertDialogTitle>
 						<AlertDialogDescription className="text-[var(--text-secondary)]">
 							Are you sure you want to delete "
-							{selectedFile?.title || (selectedFile ? getFileName(selectedFile.audio_path) : "")}
+							{selectedFile ? getRecordingDisplayTitle(selectedFile, getFileName(selectedFile.audio_path)) : ""}
 							"? This action cannot be undone and will
 							permanently remove the audio file and any
 							transcription data.

@@ -2,6 +2,7 @@ package dropzone
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"scriberr/internal/config"
 	"scriberr/internal/models"
 	"scriberr/internal/repository"
+	"scriberr/internal/service/titlededup"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
@@ -31,6 +33,7 @@ type Service struct {
 	taskQueue    TaskQueue
 	jobRepo      repository.JobRepository
 	userRepo     repository.UserRepository
+	titleDedup   *titlededup.Service
 }
 
 // NewService creates a new dropzone service
@@ -41,6 +44,7 @@ func NewService(cfg *config.Config, taskQueue TaskQueue, jobRepo repository.JobR
 		dropzonePath: filepath.Join("data", "dropzone"),
 		jobRepo:      jobRepo,
 		userRepo:     userRepo,
+		titleDedup:   titlededup.NewService(jobRepo),
 	}
 }
 
@@ -252,16 +256,20 @@ func (s *Service) uploadFile(sourcePath, originalFilename string) error {
 	}
 
 	// Create job record with "uploaded" status
+	cleanedTitle := titlededup.CleanTitle(originalFilename)
 	job := models.TranscriptionJob{
 		ID:        jobID,
 		AudioPath: destPath,
 		Status:    models.StatusUploaded,
-		Title:     &originalFilename, // Use original filename as title
+		Title:     &cleanedTitle,
 	}
 
-	// Save to database
-	if err := s.jobRepo.Create(context.Background(), &job); err != nil {
-		os.Remove(destPath) // Clean up file on database error
+	if err := s.titleDedup.GuardCreate(context.Background(), &job); err != nil {
+		os.Remove(destPath)
+		var dup *titlededup.DuplicateUploadError
+		if errors.As(err, &dup) && dup.ExistingJob != nil {
+			return fmt.Errorf("duplicate upload: recording titled %q already exists", cleanedTitle)
+		}
 		return fmt.Errorf("failed to create job record: %v", err)
 	}
 

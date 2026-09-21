@@ -30,6 +30,7 @@ dist
 **/dist
 build
 **/build
+tests
 
 # Data and Logs
 data
@@ -46,6 +47,8 @@ temp
 
 # Documentation and Assets (if not needed for build)
 docs
+api-docs
+web/project-site
 assets
 manifest_and_icons
 manifest_and_icons.zip

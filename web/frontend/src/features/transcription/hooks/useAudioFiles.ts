@@ -123,6 +123,14 @@ export function useAudioUpload() {
                 body: formData,
             });
 
+            if (response.status === 409) {
+                const errorData = await response.json();
+                const message =
+                    (typeof errorData.message === 'string' && errorData.message) ||
+                    'This file has already been uploaded.';
+                throw new Error(message);
+            }
+
             if (!response.ok) {
                 throw new Error('Upload failed');
             }
@@ -156,6 +164,12 @@ export function useMultiTrackUpload() {
 
             if (!response.ok) {
                 const errorData = await response.json();
+                if (response.status === 409) {
+                    const message =
+                        (typeof errorData.message === 'string' && errorData.message) ||
+                        'This file has already been uploaded.';
+                    throw new Error(message);
+                }
                 throw new Error(errorData.error || 'Upload failed');
             }
             return response.json();
@@ -186,6 +200,12 @@ export function useYouTubeDownload() {
 
             if (!response.ok) {
                 const errorData = await response.json();
+                if (response.status === 409) {
+                    const message =
+                        (typeof errorData.message === 'string' && errorData.message) ||
+                        'This file has already been uploaded.';
+                    throw new Error(message);
+                }
                 throw new Error(errorData.error || "Failed to download YouTube audio");
             }
             return response.json();

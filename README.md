@@ -184,6 +184,14 @@ Scriberr works out of the box. However, for Homebrew or manual installations, yo
 | `OPENAI_API_KEY` | API Key for OpenAI (optional). | `""` |
 | `JWT_SECRET` | Secret for signing JWTs. Auto-generated if not set. | Auto-generated |
 
+#### Duplicate uploads
+
+Uploads are rejected when another job already uses the **same title** (compared case-insensitively, with any trailing file extension removed from the title). Different titles are always allowed, even if the audio bytes are identical.
+
+- Re-uploading the same title returns **HTTP 409** with `error: duplicate_upload`, `existing_job_id`, and `existing_title`.
+- New uploads store titles **without** the file extension (for example `meeting.m4a` is saved as `meeting`).
+- Quick transcription (`/api/v1/transcription/quick`) is not deduplicated against permanent uploads.
+
 **Example `.env` file:**
 
 ```bash

@@ -139,7 +139,10 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                     } else {
                         toast({
                             title: "Upload Failed",
-                            description: `Failed to upload ${file.name}`,
+                            description:
+                                error instanceof Error
+                                    ? error.message
+                                    : `Failed to upload ${file.name}`,
                         });
                     }
                 }
@@ -211,7 +214,10 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                 } else {
                     toast({
                         title: "Upload Failed",
-                        description: `Failed to upload ${title}`,
+                        description:
+                            error instanceof Error
+                                ? error.message
+                                : `Failed to upload ${title}`,
                     });
                 }
             } finally {

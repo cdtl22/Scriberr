@@ -22,6 +22,7 @@ import (
 	"scriberr/internal/queue"
 	"scriberr/internal/repository"
 	"scriberr/internal/service"
+	"scriberr/internal/service/titlededup"
 	"scriberr/internal/sse"
 	"scriberr/internal/transcription"
 	"scriberr/pkg/logger"
@@ -52,6 +53,7 @@ type Handler struct {
 	quickTranscription  *transcription.QuickTranscriptionService
 	multiTrackProcessor *processing.MultiTrackProcessor
 	broadcaster         *sse.Broadcaster
+	titleDedup            *titlededup.Service
 }
 
 // NewHandler creates a new handler
@@ -96,6 +98,7 @@ func NewHandler(
 		quickTranscription:  quickTranscription,
 		multiTrackProcessor: multiTrackProcessor,
 		broadcaster:         broadcaster,
+		titleDedup:            titlededup.NewService(jobRepo),
 	}
 }
 
@@ -314,14 +317,11 @@ func (h *Handler) UploadAudio(c *gin.Context) {
 		Status:    models.StatusUploaded,
 	}
 
-	if title := c.PostForm(paramTitle); title != "" {
-		job.Title = &title
-	}
+	job.Title = resolveUploadTitle(c.PostForm(paramTitle), header.Filename)
 
-	// Save to database using Repository
-	if err := h.jobRepo.Create(c.Request.Context(), &job); err != nil {
-		_ = h.fileService.RemoveFile(filePath) // Clean up file
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job"})
+	if h.createJobUnlessDuplicateTitle(c, &job, func() {
+		_ = h.fileService.RemoveFile(filePath)
+	}) {
 		return
 	}
 
@@ -421,15 +421,12 @@ func (h *Handler) UploadVideo(c *gin.Context) {
 		Status:    models.StatusUploaded,
 	}
 
-	if title := c.PostForm(paramTitle); title != "" {
-		job.Title = &title
-	}
+	job.Title = resolveUploadTitle(c.PostForm(paramTitle), header.Filename)
 
-	// Save to database
-	if err := h.jobRepo.Create(c.Request.Context(), &job); err != nil {
-		_ = h.fileService.RemoveFile(videoPath)
+	if h.createJobUnlessDuplicateTitle(c, &job, func() {
 		_ = h.fileService.RemoveFile(audioPath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job"})
+		_ = h.fileService.RemoveFile(videoPath)
+	}) {
 		return
 	}
 
@@ -493,7 +490,10 @@ func (h *Handler) UploadMultiTrack(c *gin.Context) {
 		return
 	}
 
-	files := form.File["files"]
+	files := form.File["tracks"]
+	if len(files) == 0 {
+		files = form.File["files"]
+	}
 	if len(files) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No files uploaded"})
 		return
@@ -532,27 +532,40 @@ func (h *Handler) UploadMultiTrack(c *gin.Context) {
 		})
 	}
 
+	var aupPath *string
+	if aupHeaders := form.File["aup"]; len(aupHeaders) > 0 {
+		savedAup, err := h.fileService.SaveUpload(aupHeaders[0], jobDir)
+		if err != nil {
+			_ = h.fileService.RemoveDirectory(jobDir)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save .aup project file"})
+			return
+		}
+		aupPath = &savedAup
+	}
+
 	// Create job record
 	job := models.TranscriptionJob{
 		ID:              jobID,
 		Status:          models.StatusUploaded,
 		IsMultiTrack:    true,
 		MultiTrackFiles: trackFiles,
+		AupFilePath:     aupPath,
+		AudioPath:       trackFiles[0].FilePath,
 	}
 
-	if title := c.PostForm(paramTitle); title != "" {
-		job.Title = &title
-	} else {
-		defaultTitle := fmt.Sprintf("Multi-track Job %s", jobID)
-		job.Title = &defaultTitle
+	multiTitle := c.PostForm(paramTitle)
+	if multiTitle == "" {
+		multiTitle = fmt.Sprintf("Multi-track Job %s", jobID)
 	}
+	job.Title = resolveUploadTitle(multiTitle, multiTitle)
 
-	// Save to database
-	if err := h.jobRepo.Create(c.Request.Context(), &job); err != nil {
+	if h.createJobUnlessDuplicateTitle(c, &job, func() {
 		_ = h.fileService.RemoveDirectory(jobDir)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job"})
+	}) {
 		return
 	}
+
+	c.JSON(http.StatusOK, job)
 }
 
 // @Summary Get multi-track merge status
@@ -778,14 +791,11 @@ func (h *Handler) SubmitJob(c *gin.Context) {
 		Parameters:  params,
 	}
 
-	if title := c.PostForm(paramTitle); title != "" {
-		job.Title = &title
-	}
+	job.Title = resolveUploadTitle(c.PostForm(paramTitle), header.Filename)
 
-	// Save to database
-	if err := h.jobRepo.Create(c.Request.Context(), &job); err != nil {
+	if h.createJobUnlessDuplicateTitle(c, &job, func() {
 		_ = h.fileService.RemoveFile(filePath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job"})
+	}) {
 		return
 	}
 
@@ -1212,13 +1222,19 @@ func (h *Handler) UpdateTranscriptionTitle(c *gin.Context) {
 		return
 	}
 
+	cleaned := titlededup.CleanTitle(body.Title)
+	if cleaned == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Title is required"})
+		return
+	}
+
 	job, err := h.jobRepo.FindByID(c.Request.Context(), jobID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 		return
 	}
 
-	job.Title = &body.Title
+	job.Title = &cleaned
 	if err := h.jobRepo.Update(c.Request.Context(), job); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update title"})
 		return
@@ -2673,16 +2689,11 @@ func (h *Handler) DownloadFromYouTube(c *gin.Context) {
 		Status:    models.StatusUploaded,
 	}
 
-	// Set title
-	if title != "" {
-		job.Title = &title
-	}
+	job.Title = resolveUploadTitle(title, title)
 
-	// Save to database
-	if err := h.jobRepo.Create(c.Request.Context(), &job); err != nil {
-		// Clean up downloaded file on database error
+	if h.createJobUnlessDuplicateTitle(c, &job, func() {
 		os.Remove(actualFilePath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save transcription record"})
+	}) {
 		return
 	}
 
