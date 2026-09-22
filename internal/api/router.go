@@ -238,6 +238,7 @@ func SetupRoutes(handler *Handler, authService *auth.AuthService) *gin.Engine {
 		search := v1.Group("/search")
 		search.Use(middleware.AuthMiddleware(authService))
 		{
+			search.GET("/index-status", handler.GetTranscriptSearchIndexStatus)
 			search.GET("/transcripts", handler.SearchTranscripts)
 			search.POST("/transcripts/ask", handler.AskTranscripts)
 			search.POST("/reindex", handler.ReindexTranscripts)

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"scriberr/internal/llm"
-	"scriberr/internal/models"
 	"scriberr/internal/transcriptindex"
+	"scriberr/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,11 +29,54 @@ import (
 // @Router /api/v1/search/transcripts [get]
 // @Security ApiKeyAuth
 // @Security BearerAuth
+func (h *Handler) ensureTranscriptSearchIndex(c *gin.Context) {
+	if h.transcriptIndexer == nil {
+		return
+	}
+	result, err := h.transcriptIndexer.EnsureSearchIndex(
+		c.Request.Context(),
+		transcriptindex.DefaultEnsureBatch,
+	)
+	if err != nil {
+		logger.Warn("Transcript search index ensure failed", "error", err.Error())
+		return
+	}
+	if result.Indexed > 0 || result.Failed > 0 {
+		logger.Info(
+			"Transcript search index backfill",
+			"indexed", result.Indexed,
+			"failed", result.Failed,
+			"remaining_missing", result.RemainingMissing,
+		)
+	}
+}
+
+// GetTranscriptSearchIndexStatus reports transcript vs segment index coverage (for ops/debug).
+// @Summary Transcript search index status
+// @Tags search
+// @Produce json
+// @Router /api/v1/search/index-status [get]
+// @Security ApiKeyAuth
+// @Security BearerAuth
+func (h *Handler) GetTranscriptSearchIndexStatus(c *gin.Context) {
+	if h.transcriptIndexer == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Transcript search is not available"})
+		return
+	}
+	stats, err := h.transcriptIndexer.IndexStats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read index status"})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
 func (h *Handler) SearchTranscripts(c *gin.Context) {
 	if h.transcriptIndexer == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Transcript search is not available"})
 		return
 	}
+	h.ensureTranscriptSearchIndex(c)
 
 	query := strings.TrimSpace(c.Query("q"))
 	if query == "" {
@@ -86,10 +129,11 @@ func (h *Handler) SearchTranscripts(c *gin.Context) {
 }
 
 type TranscriptAskRequest struct {
-	Question      string   `json:"question" binding:"required"`
-	Model         string   `json:"model"`
-	Limit         int      `json:"limit"`
-	RecordingIDs  []string `json:"recording_ids,omitempty"`
+	Question     string   `json:"question" binding:"required"`
+	SearchQuery  string   `json:"search_query"`
+	Model        string   `json:"model"`
+	Limit        int      `json:"limit"`
+	RecordingIDs []string `json:"recording_ids,omitempty"`
 }
 
 type TranscriptAskSource struct {
@@ -119,6 +163,7 @@ func (h *Handler) AskTranscripts(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Transcript search is not available"})
 		return
 	}
+	h.ensureTranscriptSearchIndex(c)
 
 	var req TranscriptAskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -140,8 +185,13 @@ func (h *Handler) AskTranscripts(c *gin.Context) {
 		limit = transcriptindex.MaxSearchLimit
 	}
 
+	searchQuery := strings.TrimSpace(req.SearchQuery)
+	if searchQuery == "" {
+		searchQuery = question
+	}
+
 	searchResult, err := h.transcriptIndexer.Search(c.Request.Context(), transcriptindex.SearchParams{
-		Query:        question,
+		Query:        searchQuery,
 		Page:         1,
 		Limit:        limit,
 		RecordingIDs: req.RecordingIDs,
@@ -230,34 +280,25 @@ func (h *Handler) ReindexTranscripts(c *gin.Context) {
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	if limit <= 0 {
-		limit = 50
+		limit = transcriptindex.DefaultEnsureBatch
 	}
-	if limit > 500 {
-		limit = 500
+	if limit > transcriptindex.MaxEnsureBatch {
+		limit = transcriptindex.MaxEnsureBatch
 	}
 
-	jobs, err := h.jobRepo.FindByStatus(c.Request.Context(), models.StatusCompleted)
+	result, err := h.transcriptIndexer.ReindexMissing(c.Request.Context(), limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list jobs"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reindex transcripts"})
 		return
 	}
 
-	indexed := 0
-	for _, job := range jobs {
-		if indexed >= limit {
-			break
-		}
-		if job.Transcript == nil || strings.TrimSpace(*job.Transcript) == "" {
-			continue
-		}
-		if err := h.transcriptIndexer.IndexJob(c.Request.Context(), job.ID); err != nil {
-			continue
-		}
-		indexed++
-	}
-
+	stats, _ := h.transcriptIndexer.IndexStats(c.Request.Context())
 	c.JSON(http.StatusOK, gin.H{
-		"indexed": indexed,
-		"limit":   limit,
+		"indexed":            result.Indexed,
+		"failed":             result.Failed,
+		"limit":              result.Limit,
+		"remaining_missing":  result.RemainingMissing,
+		"jobs_with_transcript": stats.JobsWithTranscript,
+		"jobs_indexed":       stats.JobsIndexed,
 	})
 }

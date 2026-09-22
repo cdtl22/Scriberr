@@ -17,6 +17,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTranscriptSearch_AutoBackfillBeforeQuery(t *testing.T) {
+	helper := NewTestHelper(t, "search_autobackfill.db")
+	defer helper.Cleanup()
+
+	segmentRepo := repository.NewTranscriptSegmentRepository(helper.DB)
+	jobRepo := repository.NewJobRepository(helper.DB)
+	indexer := transcriptindex.NewIndexer(helper.DB, segmentRepo, jobRepo)
+
+	transcript := `{"segments":[{"start":1,"end":2,"text":"workstation capacity with Tian","speaker":"A"}]}`
+	job := &models.TranscriptionJob{
+		ID:         "job-autobackfill",
+		Status:     models.StatusCompleted,
+		AudioPath:  "/data/audio/meeting.wav",
+		Transcript: &transcript,
+	}
+	require.NoError(t, helper.DB.Create(job).Error)
+
+	gin.SetMode(gin.TestMode)
+	handler := setupSearchTestHandler(helper, indexer)
+	router := gin.New()
+	router.GET("/api/v1/search/transcripts", handler.SearchTranscripts)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search/transcripts?q=workstation", nil)
+	req.Header.Set("X-API-Key", helper.TestAPIKey)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	assert.Equal(t, http.StatusOK, resp.Code)
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &payload))
+	results, ok := payload["results"].([]interface{})
+	require.True(t, ok)
+	assert.NotEmpty(t, results)
+
+	stats, err := indexer.IndexStats(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), stats.MissingIndex)
+}
+
 func TestTranscriptSearch_IndexAndQuery(t *testing.T) {
 	helper := NewTestHelper(t, "search_test.db")
 	defer helper.Cleanup()
